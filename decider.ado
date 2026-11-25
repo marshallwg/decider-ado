@@ -456,7 +456,26 @@ program define _decider_resume, rclass
     _decider_resolve_python, python(`"`python'"') backend("neojev")
     local python `"`r(python)'"'
 
+    // Verify saved positions against current text before any model calls or
+    // replacement of existing results. Export strings through the same CSV path
+    // as initial scoring; Python selects only the frozen input variable names.
+    tempfile current_input
+    if (_N > 0) {
+        quietly ds, has(type string)
+        local current_strings `r(varlist)'
+        tempvar current_rowid
+        quietly gen long `current_rowid' = _n
+        tempname fr_current
+        frame put `current_rowid' `current_strings', into(`fr_current')
+        frame `fr_current' {
+            rename `current_rowid' _decider_rowid
+            quietly export delimited using `"`current_input'"', quote replace
+        }
+        frame drop `fr_current'
+    }
+
     local extra_args "--resume"
+    if (_N > 0) local extra_args `"`extra_args' --current-input "`current_input'""'
     if (`timeout' > 0) local extra_args `"`extra_args' --timeout `timeout'"'
     if (`workers' > 0) local extra_args `"`extra_args' --workers `workers'"'
 
@@ -468,7 +487,7 @@ program define _decider_resume, rclass
     capture confirm file `"`rundir'/summary.txt"'
     if (_rc != 0) {
         di as err "decider resume failed. Python output:"
-        capture type `"`rundir'/_stderr.log"'
+        capture noisily type `"`rundir'/_stderr.log"'
         exit 198
     }
 

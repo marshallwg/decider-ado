@@ -118,7 +118,11 @@ When one string variable is passed, its text is sent directly as the state; when
 
 Every run freezes `config.json`, `frozen_prompt.txt`, `model_input.json`, `scores.csv`, and `model_metadata.json` inside `rundir()` (or a temporary run directory if `rundir()` is omitted). For `openrouter` runs, successful responses and call-level timing/error diagnostics are logged to `api_calls.jsonl` and `api_attempts.jsonl` without writing credentials or submitted text to the attempt log. Each completed row is flushed immediately by `row_id` behind a lock, so interrupted or parallel runs can pick up cleanly under `decider resume`.
 
-Prompt SHA-256 hashes, backend identifiers, model identifiers, sample counts, review rates, order-stability rates, API costs, and the option distribution matrix (`r(dist)`) are returned in `r()` and recorded as variable characteristics (`char`) on every generated variable.
+Prompt SHA-256 hashes, backend identifiers, model identifiers, sample counts, review rates, order-stability rates, API costs, and the option distribution matrix (`r(dist)`) are returned in `r()`. The backend, model, prompt hash, and run directory are also recorded as variable characteristics (`char`) on every generated variable.
+
+Resume with data in memory requires the original input text at every original sample position. The command checks this before model calls or replacement of result variables and stops if inputs changed, observations moved, or original positions are missing. Restore the original dataset and order before retrying. Changes outside the original sample do not affect this check. With no observations in memory, resume loads the scores directly; that branch returns only `r(cmd)`, `r(subcmd)`, and `r(run_dir)`.
+
+Resume also validates checkpoint headers and rows. An incomplete or invalid checkpoint stops the run without automatically rescoring damaged rows, which could incur another API charge. Inspect the checkpoint before retrying.
 
 ## Scope and limitations
 

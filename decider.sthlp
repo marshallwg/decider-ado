@@ -86,6 +86,15 @@ and links results back into the active dataset via Stata frames. For
 {cmd:OPENROUTER_API_KEY} environment variable and is never written to disk.
 
 
+{pstd}
+When resuming with observations in memory, the original input text must remain
+at every original sample position. Changed text, reordered observations, or
+missing original positions stop resume before model calls or replacement of
+results. Invalid or incomplete checkpoint rows also stop resume without
+rescoring them. Restore the original inputs and order before retrying.
+With no observations in memory, resume loads scores directly and returns only
+{cmd:r(cmd)}, {cmd:r(subcmd)}, and {cmd:r(run_dir)}.
+
 {marker variables}{...}
 {title:Generated variables}
 

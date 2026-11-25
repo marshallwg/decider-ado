@@ -726,19 +726,96 @@ def acquire_lock(run_dir: Path) -> Path:
     return lock_path
 
 
-def load_existing_scores(scores_path: Path, valid_row_ids: set[int]) -> dict[int, dict[str, Any]]:
+def validate_resume_inputs(current_path: Path, records: list[dict[str, Any]],
+                           varlist: list[str]) -> None:
+    """Require the original text at every saved position, including missing text.
+
+    Compare exact exported strings rather than normalized model states: even an
+    edit that leaves the model state unchanged should require deliberate review.
+    Rows outside the original scoring sample do not participate in this check.
+    """
+    expected = {record["row_id"]: record["fields"] for record in records}
+    with current_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames or not set(["_decider_rowid", *varlist]).issubset(reader.fieldnames):
+            raise ValueError("Resume mismatch: original string input variables are missing or changed type.")
+        matched = set()
+        for row in reader:
+            rid = int(row["_decider_rowid"])
+            if rid in expected:
+                if {v: row[v] for v in varlist} != expected[rid]:
+                    raise ValueError(
+                        f"Resume mismatch at observation {rid}: input text or row order changed. "
+                        "Restore the original inputs and order before resuming."
+                    )
+                matched.add(rid)
+        if matched != set(expected):
+            raise ValueError("Resume mismatch: original observations are missing from the active dataset.")
+
+
+def load_existing_scores(scores_path: Path, valid_row_ids: set[int],
+                         config: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """Reject damaged checkpoints; never silently discard or rescore a row."""
     if not scores_path.exists():
         return {}
+    # Every writerow ends in a newline. A missing terminator may indicate a
+    # write interrupted in the final field, even if CSV parsing accepts it.
+    with scores_path.open("rb") as handle:
+        handle.seek(0, 2)
+        if handle.tell():
+            handle.seek(-1, 2)
+            if handle.read(1) != b"\n":
+                raise ValueError("Incomplete scores.csv checkpoint: missing final newline; no rows were rescored.")
     completed: dict[int, dict[str, Any]] = {}
+    columns = score_columns(config)
     with scores_path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            rid = int(row["row_id"])
-            if rid not in valid_row_ids:
-                raise ValueError(f"scores.csv contains row_id {rid} not in model_input.json.")
-            if rid in completed:
-                raise ValueError(f"scores.csv contains duplicate row_id {rid}.")
-            completed[rid] = row
+        reader = csv.DictReader(handle, strict=True)
+        if reader.fieldnames != columns:
+            raise ValueError("Invalid scores.csv checkpoint header; no rows were rescored.")
+        try:
+            for row in reader:
+                # DictReader fills absent trailing fields with None. Empty strings
+                # are legitimate only for fields that this row's status permits.
+                if None in row or any(value is None for value in row.values()):
+                    raise ValueError("incomplete row")
+                rid = int(row["row_id"])
+                if rid not in valid_row_ids or rid in completed:
+                    raise ValueError("unknown or duplicate row_id")
+                if row["status"] not in ("scored", "missing_text") or row["review"] not in ("0", "1"):
+                    raise ValueError("invalid status or review flag")
+                if row["review"] == "1" and not row["review_reason"]:
+                    raise ValueError("missing review reason")
+                numeric = [c for c in columns if c not in
+                           ("row_id", "status", "review", "review_reason", "state_tokens")]
+                if row["status"] == "missing_text":
+                    if row["review"] != "1" or any(row[c] != "" for c in numeric):
+                        raise ValueError("invalid missing-text row")
+                else:
+                    values = {c: float(row[c]) for c in numeric}
+                    if not all(math.isfinite(v) for v in values.values()):
+                        raise ValueError("nonfinite score")
+                    if config["type"] == "noul":
+                        probabilities = [values["prob"]]
+                    else:
+                        k = len(config["options"])
+                        probabilities = [values[f"p{i}"] for i in range(1, k + 1)]
+                        if not math.isclose(sum(probabilities), 1.0, abs_tol=1e-4):
+                            raise ValueError("probabilities do not sum to one")
+                        for name in ("class_idx", "rev_class_idx"):
+                            if name in values and values[name] not in range(1, k + 1):
+                                raise ValueError("invalid class index")
+                        if "order_stable" in values and values["order_stable"] not in (0, 1):
+                            raise ValueError("invalid order stability flag")
+                    if any(not 0 <= v <= 1 for v in probabilities):
+                        raise ValueError("probability outside [0, 1]")
+                if row["state_tokens"] and int(row["state_tokens"]) < 0:
+                    raise ValueError("invalid token count")
+                completed[rid] = row
+        except (ValueError, csv.Error) as exc:
+            raise ValueError(
+                f"Invalid or incomplete scores.csv checkpoint near line {reader.line_num}: {exc}. "
+                "No rows were rescored; inspect the checkpoint before retrying."
+            ) from None
     return completed
 
 
@@ -803,7 +880,8 @@ def write_summary(run_dir: Path, config: dict[str, Any], backend_meta: dict[str,
 
 def run_scoring(run_dir: Path, resume: bool = False,
                 timeout_override: int | None = None,
-                workers_override: int | None = None) -> None:
+                workers_override: int | None = None,
+                current_input: Path | None = None) -> None:
     run_dir = run_dir.resolve()
     config = load_or_freeze_config(run_dir)
     if timeout_override is not None:
@@ -816,6 +894,8 @@ def run_scoring(run_dir: Path, resume: bool = False,
         config["workers"] = workers_override
 
     records, input_sha256 = load_or_freeze_inputs(run_dir, config["varlist"])
+    if resume and current_input is not None:
+        validate_resume_inputs(current_input, records, config["varlist"])
     valid_ids = {r["row_id"] for r in records}
     scores_path = run_dir / "scores.csv"
     cols = score_columns(config)
@@ -828,7 +908,7 @@ def run_scoring(run_dir: Path, resume: bool = False,
 
     lock_path = acquire_lock(run_dir)
     try:
-        completed = load_existing_scores(scores_path, valid_ids) if resume else {}
+        completed = load_existing_scores(scores_path, valid_ids, config) if resume else {}
         pending = [r for r in records if r["row_id"] not in completed]
 
         model = create_backend(config, run_dir)
@@ -1050,6 +1130,7 @@ def run_setup_local(model_id: str = DEFAULT_NEOJEV_MODEL, download_model: bool =
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Stata decider scoring engine")
     parser.add_argument("run_dir", nargs="?", default=None, help="Path to the run directory")
+    parser.add_argument("--current-input", type=Path, help="Active Stata input snapshot for resume validation")
     parser.add_argument("--resume", action="store_true", help="Resume an interrupted run")
     parser.add_argument("--timeout", type=int, default=None, help="Override request timeout (seconds)")
     parser.add_argument("--workers", type=int, default=None, help="Override worker count")
@@ -1084,6 +1165,7 @@ def main(argv: list[str] | None = None) -> int:
             resume=args.resume,
             timeout_override=args.timeout,
             workers_override=args.workers,
+            current_input=args.current_input,
         )
         return 0
     except Exception as exc:

@@ -147,6 +147,62 @@ class DeciderScorerTests(unittest.TestCase):
             # Row 3 kept its original pre-checkpointed probability
             self.assertAlmostEqual(float(rows[2]["p1"]), 0.9, places=6)
 
+    def test_resume_checks_inputs_before_backend_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            _write_run(run_dir, options=["A", "B"])
+            ds.run_scoring(run_dir)
+            checkpoint = (run_dir / "scores.csv").read_bytes()
+            current = run_dir / "current.csv"
+            with (run_dir / "input.csv").open() as handle:
+                original = list(csv.DictReader(handle))
+            cases = {
+                "reordered": [dict(original[2], _decider_rowid="1"), original[1],
+                              dict(original[0], _decider_rowid="3")],
+                "edited": [dict(original[0], text="changed"), *original[1:]],
+                "missing": original[:2],
+                "blank_changed": [original[0], dict(original[1], text="now filled"), original[2]],
+            }
+            for name, rows in cases.items():
+                with self.subTest(name=name):
+                    with current.open("w", newline="") as handle:
+                        writer = csv.DictWriter(handle, fieldnames=["_decider_rowid", "text"])
+                        writer.writeheader()
+                        writer.writerows(rows)
+                    with mock.patch.object(ds, "create_backend") as backend:
+                        with self.assertRaisesRegex(ValueError, "Resume mismatch"):
+                            ds.run_scoring(run_dir, resume=True, current_input=current)
+                        backend.assert_not_called()
+                    self.assertEqual((run_dir / "scores.csv").read_bytes(), checkpoint)
+            current.write_bytes((run_dir / "input.csv").read_bytes())
+            ds.run_scoring(run_dir, resume=True, current_input=current)
+            self.assertEqual((run_dir / "scores.csv").read_bytes(), checkpoint)
+
+    def test_resume_rejects_damaged_checkpoints_before_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            _write_run(run_dir, options=["A", "B"])
+            ds.run_scoring(run_dir)
+            checkpoint = run_dir / "scores.csv"
+            original = checkpoint.read_text()
+            lines = original.splitlines(keepends=True)
+            cases = {
+                "partial_row": lines[0] + "1,scored,1,0.8\n",
+                "missing_terminator": original.rstrip("\n"),
+                "bad_header": "row_id,status\n1,scored\n",
+                "missing_probability": original.replace("1,scored,", "1,scored,,", 1),
+                "unterminated_quote": lines[0] + '1,scored,"unfinished',
+            }
+            for name, content in cases.items():
+                with self.subTest(name=name):
+                    checkpoint.write_text(content)
+                    with mock.patch.object(ds, "create_backend") as backend:
+                        with self.assertRaisesRegex(ValueError, "checkpoint"):
+                            ds.run_scoring(run_dir, resume=True)
+                        backend.assert_not_called()
+                    self.assertEqual(checkpoint.read_text(), content)
+                    self.assertFalse((run_dir / ".scoring.lock").exists())
+
     def test_neojev_rejects_workers_gt_1(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)

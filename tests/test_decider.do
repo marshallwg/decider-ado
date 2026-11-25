@@ -131,11 +131,47 @@ decider session if id <= 3, ///
 
 assert r(N_scored) == 3
 
+* Resume must reject changed order/text without overwriting existing results.
+clonevar saved_class = res_class
+clonevar saved_session = session
+gsort -id
+capture noisily decider resume, rundir("`resume_dir'") replace
+assert _rc == 198
+assert res_class == saved_class
+sort id
+replace session = "Edited input" in 1
+capture noisily decider resume, rundir("`resume_dir'") replace
+assert _rc == 198
+assert res_class == saved_class
+replace session = saved_session in 1
+
+* Changes outside the original sample are allowed.
+replace session = "Edited outside sample" in 5
+
 * Re-run resume (all 3 rows already scored -> 0 new requests, clean attach with replace)
 decider resume, rundir("`resume_dir'") replace
 assert r(subcmd) == "resume"
 assert r(N_scored) == 3
 assert r(n_requests) == 0
+
+* Reject a partial checkpoint row while preserving attached results.
+tempfile intact_scores
+copy "`resume_dir'/scores.csv" "`intact_scores'", replace
+tempname damaged
+file open `damaged' using "`resume_dir'/scores.csv", write text append
+file write `damaged' "4,scored,1,0.8" _n
+file close `damaged'
+capture noisily decider resume, rundir("`resume_dir'") replace
+assert _rc == 198
+assert res_class == saved_class
+copy "`intact_scores'" "`resume_dir'/scores.csv", replace
+
+* Empty-memory resume retains its documented direct-import behavior.
+clear
+decider resume, rundir("`resume_dir'")
+assert _N == 3
+assert r(subcmd) == "resume"
+confirm variable row_id class_idx
 
 capture shell rm -rf "`resume_dir'"
 
