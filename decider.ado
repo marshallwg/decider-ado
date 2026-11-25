@@ -91,7 +91,7 @@ program define _decider_check, rclass
     if (_rc != 0) {
         di as err "decider check could not execute Python (`py_exe')."
         di as err "Install Python 3.10+ or pass python(path). See README for setup instructions."
-        capture type `"`chk_err'"'
+        capture noisily type `"`chk_err'"'
         exit 198
     }
 
@@ -415,7 +415,7 @@ program define _decider_score, rclass
     capture confirm file `"`rundir'/summary.txt"'
     if (_rc != 0) {
         di as err "decider scoring failed. Python output:"
-        capture type `"`rundir'/_stderr.log"'
+        capture noisily type `"`rundir'/_stderr.log"'
         exit 198
     }
 

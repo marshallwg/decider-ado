@@ -16,3 +16,6 @@ vendor/
 .env
 .DS_Store
 *.code-workspace
+
+# Temporarily ignored while reviewing worked examples
+examples/
