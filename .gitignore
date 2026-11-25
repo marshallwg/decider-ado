@@ -1,0 +1,18 @@
+# Python & environments
+__pycache__/
+*.py[cod]
+.venv/
+
+# Stata logs & temporary outputs
+*.log
+*.smcl
+*.dta
+tests/logs/
+
+# Run artifacts, data, and credentials
+runs/
+data/
+vendor/
+.env
+.DS_Store
+*.code-workspace

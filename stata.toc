@@ -1,0 +1,3 @@
+v 3
+d decider-ado: Structured probabilistic decisions over text variables in Stata
+p decider Structured probabilistic decisions over text variables

@@ -1,0 +1,17 @@
+v 3
+d 'DECIDER': Structured probabilistic decisions over text variables in Stata
+d
+d Applies structured decision models (choice, ordered score, or binary noul
+d probability) to one or more string variables in memory. Supports local
+d Apple Silicon NeoJev (MLX) and hosted OpenRouter Decisions API with
+d explicit cloud opt-in, prompt hashing, option-order stability checks,
+d crash-safe row-ID checkpointing/resume, frame-based merging, and r()
+d returned results.
+d
+d Requires: Stata 16+, Python 3.10+ (stdlib only for OpenRouter; MLX for local NeoJev)
+d Distribution-Date: 20261125
+d Author: Marshall Garland
+d
+f decider.ado
+f decider.sthlp
+f _decider_score.py
